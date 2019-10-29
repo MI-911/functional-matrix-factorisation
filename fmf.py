@@ -41,21 +41,18 @@ class FunctionalMatrixFactorization():
         split_item = None 
         smallest_err = math.inf
         for i in self._D.items: 
-            print('Finding optimal profile for LIKE')
-            uL, uL_group, uL_items = self.__get_optimal_profile__(i, users, answer=AnswerType.LIKE)
-            print('Finding optimal profile for DISLIKE')
-            uD, uD_group, uD_items = self.__get_optimal_profile__(i, users, answer=AnswerType.DISLIKE)
-            print('Finding optimal profile for UNKNOWN')
-            uU, uU_group, uU_items = self.__get_optimal_profile__(i, users, answer=AnswerType.UNKNOWN)
+            uU, uU_group = self.__get_optimal_profile__(i, users, answer=AnswerType.UNKNOWN)
+            uL, uL_group = self.__get_optimal_profile__(i, users, answer=AnswerType.LIKE)
+            uD, uD_group = self.__get_optimal_profile__(i, users, answer=AnswerType.DISLIKE)
 
             # Calculate loss for each group 
             print('Calculating loss')
             i_loss = 0 
-            for uX, uX_group, uX_items in [(uL, uL_group, uL_items), 
-                                           (uD, uD_group, uD_items), 
-                                           (uU, uU_group, uU_items)]: 
+            for uX, uX_group, uX_items in [(uL, uL_group), 
+                                           (uD, uD_group), 
+                                           (uU, uU_group)]: 
                 for u in uX_group: 
-                    for i in uX_items: 
+                    for i in self._D.get_rated_items(u): 
                         i_loss += (self._D.M[u][i] - uL @ self.I[i]) ** 2
 
                 if i_loss < smallest_err: 
@@ -80,17 +77,21 @@ class FunctionalMatrixFactorization():
 
     def __get_optimal_profile__(self, item, users, answer=None): 
         group = self._D.get_user_group(users=users, item=item, answer=answer)
-        items_in_group = self._D.get_items_in_user_group(group, answer=answer)
-
+        n_users = len(group)
         coefficient_matrix = tt.zeros((self.k, self.k))
         coefficient_vector = tt.zeros((1, self.k))
-        for u in group: 
-            for i in items_in_group: 
-                coefficient_matrix += self.I[i] @ self.I[i].T 
+        for i_u, u in enumerate(group): 
+            for i in self._D.get_rated_items(u):
+                print(f'Coeff matrix: {(i_u / n_users) * 100 : 2.2f}%', end='\r')
+                i_vector = self.I[i].reshape((1, self.k))
+                coefficient_matrix += i_vector.T @ i_vector
                 coefficient_vector += self._D.M[u][i] * self.I[i] 
 
+        print(coefficient_matrix)
+        print(coefficient_matrix.shape)
+        input()
         coefficient_matrix = tt.inverse(coefficient_matrix)
-        return coefficient_matrix @ coefficient_vector, group, items_in_group
+        return coefficient_matrix @ coefficient_vector, group
 
 
     def fit(self): 

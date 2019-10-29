@@ -7,7 +7,7 @@ ANSWER_THRESHOLD = 3
 
 class AnswerType(): 
     LIKE    = 1
-    DISLIKE = -1
+    DISLIKE = 2
     UNKNOWN = 0
 
 
@@ -43,15 +43,15 @@ class DataUtil():
                 midx_map[m_count] = m
                 m_count += 1
 
-        M = tt.zeros((u_count, m_count))
+        M = tt.zeros((u_count + 1, m_count + 1))
         for u, m, r, t in ratings: 
             u = uid_map[u]
             m = mid_map[m]
             M[u][m] = AnswerType.DISLIKE if r <= ANSWER_THRESHOLD else AnswerType.LIKE
 
         self.M = M
-        self.users = uid_map.keys()
-        self.items = mid_map.keys()
+        self.users = uid_map.values()
+        self.items = mid_map.values()
         self._uid_map = uid_map
         self._mid_map = mid_map
         self._uidx_map = uidx_map
@@ -59,17 +59,20 @@ class DataUtil():
 
 
     def get_user_group(self, users=None, item=None, answer=None): 
-        return [u_id for u_id in users if self.M[self._uid_map[u_id]][self._mid_map[item]] == answer]
+        return [u_idx for u_idx in users if self.M[u_idx][item] == answer]
 
+
+    def get_rated_items(self, user): 
+        return [i_idx for i_idx in self.items if not self.M[user][i_idx] == AnswerType.UNKNOWN]
     
     def get_items_in_user_group(self, users, answer=None): 
         rated_items = []
-        for u_id in users: 
-            u_ratings = self.M[self._uid_map[u_id]]
+        for u_idx in users: 
+            u_ratings = self.M[u_idx]
             u_rated_items = u_ratings.where(u_ratings == answer, tt.zeros_like(u_ratings)).nonzero()
             rated_items += u_rated_items.tolist()
 
-        return rated_items
+        return set(rated_items)
          
 
 
