@@ -1,6 +1,7 @@
 import torch as tt 
 from data.data_utils import DataUtil, AnswerType
 from os.path import join
+from multiprocessing import Pool
 import math
 
 
@@ -38,28 +39,30 @@ class FunctionalMatrixFactorization():
 
     def __build_node__(self, users=None, node=None, current_depth=None, max_depth=None): 
         print(f'Building node at depth {current_depth}')
+        print()
         split_item = None 
-        smallest_err = math.inf
-        for i in self._D.items: 
-            uU, uU_group = self.__get_optimal_profile__(i, users, answer=AnswerType.UNKNOWN)
-            uL, uL_group = self.__get_optimal_profile__(i, users, answer=AnswerType.LIKE)
-            uD, uD_group = self.__get_optimal_profile__(i, users, answer=AnswerType.DISLIKE)
+        smallest_loss = math.inf
+        n_items = len(self._D.items)
+
+        # This for-loop can be parallellized entirely. We should probably do so.
+        for index, i in enumerate(self._D.items): 
+            uU, uU_group, U_loss = self.__get_optimal_profile_v2__(i, users, answer=AnswerType.UNKNOWN)
+            uL, uL_group, L_loss = self.__get_optimal_profile_v2__(i, users, answer=AnswerType.LIKE)
+            uD, uD_group, D_loss = self.__get_optimal_profile_v2__(i, users, answer=AnswerType.DISLIKE)
 
             # Calculate loss for each group 
-            print('Calculating loss')
-            i_loss = 0 
-            for uX, uX_group, uX_items in [(uL, uL_group), 
-                                           (uD, uD_group), 
-                                           (uU, uU_group)]: 
-                for u in uX_group: 
-                    for i in self._D.get_rated_items(u): 
-                        i_loss += (self._D.M[u][i] - uL @ self.I[i]) ** 2
+            combined_loss = U_loss + L_loss + D_loss
+            if combined_loss < smallest_loss: 
+                smallest_loss = combined_loss
+                split_item = i
+                print(f'Found new item {i} with lowest loss {smallest_loss}')
+                print()
 
-                if i_loss < smallest_err: 
-                    split_item = i 
-                    smallest_err = i_loss
+            print(f'{(index / n_items) * 100 : 2.2f}%', end='\r')
+            
 
         # We are assigned a node with a profile, now add the item and children
+        print(f'Splitting node on item {split_item}')
         node.item = split_item 
         uL_node, uD_node, uU_node = (Tree(profile=uX) for uX in [uL, uD, uU])
         node.children = { answer_type : uX_node for answer_type, uX_node in [(AnswerType.LIKE, uL_node), 
@@ -73,6 +76,27 @@ class FunctionalMatrixFactorization():
                 self.__build_node__(users=uX_group, node=uX_node, current_depth=current_depth + 1, max_depth=max_depth)
         
         return node
+
+
+    def __get_optimal_profile_v2__(self, item, users, answer=None): 
+        # Get the indeces of users in this user group, then the indeces 
+        # of items rated by those users
+        user_indeces = self._D.get_user_group(users=users, item=item, answer=answer)
+
+        # Extract the item embeddings for the item indeces and extract
+        # the user-item submatrix for our user group and item set
+        I = self.I
+        R = self._D.M[user_indeces]
+        R_map = self._D.answer_map[user_indeces]
+
+        # Calculate the optimal user embedding for every user in the user group
+        # and return the summed embedding
+        u = (I.T @ I).inverse() @ (I.T @ R.T).sum(dim=1)
+
+        U = tt.ones((len(user_indeces), self.k)) * u
+        P = (U @ I.T) * R_map  # Nullify any prediction where there isn't a rating
+        loss = (P - R) ** 2
+        return u, user_indeces, loss.sum()
 
 
     def __get_optimal_profile__(self, item, users, answer=None): 
