@@ -84,7 +84,3 @@ class DataUtil():
 
         return set(rated_items)
          
-
-
-
-
