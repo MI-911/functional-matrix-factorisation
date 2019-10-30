@@ -97,8 +97,8 @@ class FunctionalMatrixFactorization():
         uL_group = self._D.get_user_group(users=users, item=split_item, answer=AnswerType.LIKE) 
         uD_group = self._D.get_user_group(users=users, item=split_item, answer=AnswerType.DISLIKE)   
         uU_group = self._D.get_user_group(users=users, item=split_item, answer=AnswerType.UNKNOWN)          
-
-        print(f'Built node at depth {current_depth} ({self.interview.size() if self.interview else 0} out of {self.n_nodes} nodes constructed)')
+        self.c_n_nodes += 1
+        print(f'Built node at depth {current_depth} ({self.c_n_nodes} out of {self.n_nodes} nodes constructed)')
         if current_depth <= max_depth: 
             for uX_group, uX_node in [(uL_group, uL_node), 
                                       (uD_group, uD_node), 
@@ -158,6 +158,7 @@ class FunctionalMatrixFactorization():
         while not has_converged: 
             # 1. Fit a decision tree 
             self.n_nodes = int((3 ** (self.D + 1) - 1) / 2)
+	    self.c_n_nodes = 0
             print(f'Building tree with {self.n_nodes} nodes...')
             self.interview = self.__build_node__(users=range(len(self.U)), node=Tree(profile=None, backend=self), current_depth=0, max_depth=self.D)
             print(f'Updating user embeddings...')
