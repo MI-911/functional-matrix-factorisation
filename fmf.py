@@ -16,7 +16,7 @@ class Tree():
 
     def __init__(self, profile=None, backend=None): 
         self.item = None 
-        self.children = None 
+        self.children = [] 
         self.backend = backend
         self.profile = profile  
 
@@ -31,6 +31,11 @@ class Tree():
         }[self.backend._D.get_answer(user, self.item)]
 
         return next_question.conduct(user)
+
+    def size(self): 
+        if not self.children: 
+            return 1
+        return 1 + sum([n.size() for n in self.children])
          
 
 
@@ -49,6 +54,8 @@ class FunctionalMatrixFactorization():
         self.D = interview_length
         self.k = k
         self.max_cpu_count = 6
+        self.item_regularisation = 0.0015
+        self.user_regularisation = 0.0015
 
     
     def load_data(self, from_file=None): 
@@ -68,7 +75,7 @@ class FunctionalMatrixFactorization():
         uL, uL_group, L_loss = self.__get_optimal_profile_v2__(item, users, answer=AnswerType.LIKE)
         uD, uD_group, D_loss = self.__get_optimal_profile_v2__(item, users, answer=AnswerType.DISLIKE)
 
-        print(f'Splitting... ({(item / len(self.I)) * 100 : 2.2f}%) ')
+        print(f'Splitting... ({(item / len(self.I)) * 100 : 2.2f}%) ', end='\r')
         return item, (U_loss + L_loss + D_loss), uU, uL, uD
     
     def __parallelized_split__(self, inputs): 
@@ -91,6 +98,7 @@ class FunctionalMatrixFactorization():
         uD_group = self._D.get_user_group(users=users, item=split_item, answer=AnswerType.DISLIKE)   
         uU_group = self._D.get_user_group(users=users, item=split_item, answer=AnswerType.UNKNOWN)          
 
+        print(f'Built node at depth {current_depth} ({self.interview.size() if self.interview else 0} out of {self.n_nodes} nodes constructed)')
         if current_depth <= max_depth: 
             for uX_group, uX_node in [(uL_group, uL_node), 
                                       (uD_group, uD_node), 
@@ -120,16 +128,42 @@ class FunctionalMatrixFactorization():
         loss = (P - R) ** 2
         return u, user_indeces, loss.sum()
 
+    
+    def __update_user_embeddings__(self): 
+        for user in len(self.U): 
+            self.U[user] = self.interview.conduct(user)
+
+
     def __update_item_embeddings__(self): 
-        pass
+        coefficients = tt.zeros((self.k, self.k))
+        coeff_vector = tt.zeros((1, self.k))
+        for user, Ta in enumerate(self.U): 
+            coefficients += Ta @ Ta.T + (tt.eye((self.k, self.k)) * self.item_regularisation)
+            for item in self._D.get_rated_items(user): 
+                coeff_vector += Ta * self._D.M[user][item] 
+
+        return coefficients.inverse() @ coeff_vector
+
+
+    def evaluate(self, i): 
+        loss = tt.sqrt((((self.U @ self.I.T) - self._D.M) ** 2).sum())
+        print(f'RMSE: {loss} (epoch {i})') 
 
     def fit(self): 
         self.__build__(len(self._D.items), len(self._D.users))
 
         has_converged = False 
+        self.interview = None
+        n = 1
         while not has_converged: 
             # 1. Fit a decision tree 
-            print(f'Building tree...')
+            self.n_nodes = int((3 ** (self.D + 1) - 1) / 2)
+            print(f'Building tree with {self.n_nodes} nodes...')
             self.interview = self.__build_node__(users=range(len(self.U)), node=Tree(profile=None, backend=self), current_depth=0, max_depth=self.D)
+            print(f'Updating user embeddings...')
+            self.__update_user_embeddings__()
             # 2. Fit item embeddings
-            break
+            print(f'Updating item embeddings...')
+            self.__update_item_embeddings__()
+            self.evaluate(n)
+            n += 1
