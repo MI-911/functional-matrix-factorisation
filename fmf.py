@@ -53,7 +53,7 @@ class FunctionalMatrixFactorization():
         ''' 
         self.D = interview_length
         self.k = k
-        self.max_cpu_count = 6
+        self.max_cpu_count = 8
         self.item_regularisation = 0.0015
         self.user_regularisation = 0.0015
 
@@ -99,14 +99,13 @@ class FunctionalMatrixFactorization():
         uU_group = self._D.get_user_group(users=users, item=split_item, answer=AnswerType.UNKNOWN)          
         self.c_n_nodes += 1
         print(f'Built node at depth {current_depth} ({self.c_n_nodes} out of {self.n_nodes} nodes constructed)')
-        if current_depth <= max_depth: 
+        if current_depth < max_depth:
             for uX_group, uX_node in [(uL_group, uL_node), 
                                       (uD_group, uD_node), 
                                       (uU_group, uU_node)]: 
                 self.__build_node__(users=uX_group, node=uX_node, current_depth=current_depth + 1, max_depth=max_depth)
         
         return node
-        
 
     def __get_optimal_profile_v2__(self, item, users, answer=None): 
         # Get the indeces of users in this user group, then the indeces 
