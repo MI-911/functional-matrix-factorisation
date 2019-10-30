@@ -14,10 +14,24 @@ def unwrap_self(args, **kwargs):
 
 class Tree(): 
 
-    def __init__(self, profile=None): 
+    def __init__(self, profile=None, backend=None): 
         self.item = None 
         self.children = None 
+        self.backend = backend
         self.profile = profile  
+
+    def conduct(self, user): 
+        if not self.children: 
+            return self.profile 
+        
+        next_question = {
+            answer_type : child_node
+            for answer_type, child_node 
+            in zip([AnswerType.LIKE, AnswerType.DISLIKE, AnswerType.UNKNOWN], self.children)
+        }[self.backend._D.get_answer(user, self.item)]
+
+        return next_question.conduct(user)
+         
 
 
 class FunctionalMatrixFactorization(): 
@@ -68,7 +82,7 @@ class FunctionalMatrixFactorization():
         split_item, split_loss, uU, uL, uD = splits[0]
 
         node.item = split_item 
-        uL_node, uD_node, uU_node = (Tree(profile=uX) for uX in [uL, uD, uU])
+        uL_node, uD_node, uU_node = (Tree(profile=uX, backend=self) for uX in [uL, uD, uU])
         node.children = { answer_type : uX_node for answer_type, uX_node in [(AnswerType.LIKE, uL_node), 
                                                                             (AnswerType.DISLIKE, uD_node), 
                                                                             (AnswerType.UNKNOWN, uU_node)]}
@@ -79,8 +93,8 @@ class FunctionalMatrixFactorization():
 
         if current_depth <= max_depth: 
             for uX_group, uX_node in [(uL_group, uL_node), 
-                                          (uD_group, uD_node), 
-                                          (uU_group, uU_node)]: 
+                                      (uD_group, uD_node), 
+                                      (uU_group, uU_node)]: 
                 self.__build_node__(users=uX_group, node=uX_node, current_depth=current_depth + 1, max_depth=max_depth)
         
         return node
@@ -106,7 +120,8 @@ class FunctionalMatrixFactorization():
         loss = (P - R) ** 2
         return u, user_indeces, loss.sum()
 
-
+    def __update_item_embeddings__(self): 
+        pass
 
     def fit(self): 
         self.__build__(len(self._D.items), len(self._D.users))
@@ -115,6 +130,6 @@ class FunctionalMatrixFactorization():
         while not has_converged: 
             # 1. Fit a decision tree 
             print(f'Building tree...')
-            tree = self.__build_node__(users=range(len(self.U)), node=Tree(profile=None), current_depth=0, max_depth=self.D)
+            self.interview = self.__build_node__(users=range(len(self.U)), node=Tree(profile=None, backend=self), current_depth=0, max_depth=self.D)
             # 2. Fit item embeddings
             break
