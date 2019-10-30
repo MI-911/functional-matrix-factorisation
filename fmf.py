@@ -4,15 +4,12 @@ from os.path import join
 from pathos.multiprocessing import ProcessingPool as Pool
 import math
 from functools import reduce
+from joblib import Parallel, delayed
 
-class SplitStatistics(): 
 
-    def __init__(self, item=None, loss=None, unknown_profile=None, liked_profile=None, disliked_profile=None): 
-        self.item = item 
-        self.loss = loss 
-        self.unknown_profile = unknown_profile
-        self.liked_profile = liked_profile
-        self.disliked_profile = disliked_profile
+def unwrap_self(args, **kwargs):
+    # Manually unpack the 'self' argument for parallel execution of class method
+    return FunctionalMatrixFactorization.__get_split_loss__(*args, **kwargs) 
 
 
 class Tree(): 
@@ -37,7 +34,7 @@ class FunctionalMatrixFactorization():
         ''' 
         self.D = interview_length
         self.k = k
-        self.max_cpu_count = 4
+        self.max_cpu_count = 6
 
     
     def load_data(self, from_file=None): 
@@ -52,31 +49,23 @@ class FunctionalMatrixFactorization():
         for i in range(0, len(l), n):
             yield l[i:i + n]
 
+    def __get_split_loss__(self, item, users):
+        uU, uU_group, U_loss = self.__get_optimal_profile_v2__(item, users, answer=AnswerType.UNKNOWN)
+        uL, uL_group, L_loss = self.__get_optimal_profile_v2__(item, users, answer=AnswerType.LIKE)
+        uD, uD_group, D_loss = self.__get_optimal_profile_v2__(item, users, answer=AnswerType.DISLIKE)
+
+        print(f'Splitting... ({(item / len(self.I)) * 100 : 2.2f}%) ')
+        return item, (U_loss + L_loss + D_loss), uU, uL, uD
+    
+    def __parallelized_split__(self, inputs): 
+        return Parallel(n_jobs=self.max_cpu_count, backend='threading')(delayed(unwrap_self)(o) for o in inputs)
+
     def __build_node__(self, users=None, node=None, current_depth=None, max_depth=None): 
-        def __get_split_loss__(item, users):
-            uU, uU_group, U_loss = self.__get_optimal_profile_v2__(item, users, answer=AnswerType.UNKNOWN)
-            uL, uL_group, L_loss = self.__get_optimal_profile_v2__(item, users, answer=AnswerType.LIKE)
-            uD, uD_group, D_loss = self.__get_optimal_profile_v2__(item, users, answer=AnswerType.DISLIKE)
+        item_indeces = range(len(self.I))
+        splits = self.__parallelized_split__((self, item, users) for item in item_indeces)
 
-            print(f'Calculated split loss for item {item}')
-
-            return SplitStatistics(item=item, loss=U_loss + L_loss + D_loss, unknown_profile=uU, liked_profile=uL, disliked_profile=uD)
-
-        print(f'Building node at depth {current_depth}')
-
-        n_items = len(self.I)
-        users = list(users)
-
-        split_inputs = [(item, users) for item in range(n_items)]
-        
-        with Pool(processes=self.max_cpu_count) as p: 
-            items_with_loss = p.map(__get_split_loss__, split_inputs)
-
-        print(f'Processed all items...')
-        items_with_loss = sorted(items_with_loss, key=lambda x: x['loss'])
-        o = items_with_loss[0]
-        split_item, uU, uL, uD, split_loss = o['item'], o['unknown'], o['like'], o['dislike'], o['loss']
-        print(f'Best split is on item w. index {split_item} with loss {split_loss}')
+        splits = sorted(splits, key=lambda o: o[1])
+        split_item, split_loss, uU, uL, uD = splits[0]
 
         node.item = split_item 
         uL_node, uD_node, uU_node = (Tree(profile=uX) for uX in [uL, uD, uU])
@@ -95,11 +84,7 @@ class FunctionalMatrixFactorization():
                 self.__build_node__(users=uX_group, node=uX_node, current_depth=current_depth + 1, max_depth=max_depth)
         
         return node
-
-    
-    
         
-
 
     def __get_optimal_profile_v2__(self, item, users, answer=None): 
         # Get the indeces of users in this user group, then the indeces 
@@ -120,6 +105,7 @@ class FunctionalMatrixFactorization():
         P = (U @ I.T) * R_map  # Nullify any prediction where there isn't a rating
         loss = (P - R) ** 2
         return u, user_indeces, loss.sum()
+
 
 
     def fit(self): 
