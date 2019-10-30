@@ -158,7 +158,7 @@ class FunctionalMatrixFactorization():
         while not has_converged: 
             # 1. Fit a decision tree 
             self.n_nodes = int((3 ** (self.D + 1) - 1) / 2)
-	    self.c_n_nodes = 0
+            self.c_n_nodes = 0
             print(f'Building tree with {self.n_nodes} nodes...')
             self.interview = self.__build_node__(users=range(len(self.U)), node=Tree(profile=None, backend=self), current_depth=0, max_depth=self.D)
             print(f'Updating user embeddings...')
