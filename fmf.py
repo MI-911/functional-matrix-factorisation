@@ -6,36 +6,30 @@ import math
 from functools import reduce
 from joblib import Parallel, delayed
 
-
 def unwrap_self(args, **kwargs):
     # Manually unpack the 'self' argument for parallel execution of class method
-    return FunctionalMatrixFactorization.__get_split_loss__(*args, **kwargs) 
+    return FunctionalMatrixFactorization.__build_node__(*args, **kwargs) 
 
 
 class Tree(): 
 
     def __init__(self, profile=None, backend=None): 
         self.item = None 
-        self.children = [] 
+        self.children = {}
         self.backend = backend
         self.profile = profile  
 
     def conduct(self, user): 
         if not self.children: 
             return self.profile 
-        
-        next_question = {
-            answer_type : child_node
-            for answer_type, child_node 
-            in zip([AnswerType.LIKE, AnswerType.DISLIKE, AnswerType.UNKNOWN], self.children)
-        }[self.backend._D.get_answer(user, self.item)]
 
-        return next_question.conduct(user)
+        return self.children[self.backend._D.get_answer(user, self.item)].conduct(user)
+
 
     def size(self): 
         if not self.children: 
             return 1
-        return 1 + sum([n.size() for n in self.children])
+        return 1 + sum([n.size() for n in self.children.values()])
          
 
 
@@ -53,7 +47,7 @@ class FunctionalMatrixFactorization():
         ''' 
         self.D = interview_length
         self.k = k
-        self.max_cpu_count = 8
+        self.max_cpu_count = 6
         self.item_regularisation = 0.0015
         self.user_regularisation = 0.0015
 
@@ -75,7 +69,6 @@ class FunctionalMatrixFactorization():
         uL, uL_group, L_loss = self.__get_optimal_profile_v2__(item, users, answer=AnswerType.LIKE)
         uD, uD_group, D_loss = self.__get_optimal_profile_v2__(item, users, answer=AnswerType.DISLIKE)
 
-        print(f'Splitting... ({(item / len(self.I)) * 100 : 2.2f}%) ', end='\r')
         return item, (U_loss + L_loss + D_loss), uU, uL, uD
     
     def __parallelized_split__(self, inputs): 
@@ -83,7 +76,8 @@ class FunctionalMatrixFactorization():
 
     def __build_node__(self, users=None, node=None, current_depth=None, max_depth=None): 
         item_indeces = range(len(self.I))
-        splits = self.__parallelized_split__((self, item, users) for item in item_indeces)
+        # splits = self.__parallelized_split__((self, item, users) for item in item_indeces)
+        splits = [self.__get_split_loss__(item, users) for item in item_indeces]
 
         splits = sorted(splits, key=lambda o: o[1])
         split_item, split_loss, uU, uL, uD = splits[0]
@@ -97,13 +91,17 @@ class FunctionalMatrixFactorization():
         uL_group = self._D.get_user_group(users=users, item=split_item, answer=AnswerType.LIKE) 
         uD_group = self._D.get_user_group(users=users, item=split_item, answer=AnswerType.DISLIKE)   
         uU_group = self._D.get_user_group(users=users, item=split_item, answer=AnswerType.UNKNOWN)          
-        self.c_n_nodes += 1
-        print(f'Built node at depth {current_depth} ({self.c_n_nodes} out of {self.n_nodes} nodes constructed)')
+        
+        print(f'Built node at depth {current_depth} ({self.interview.size()} out of {self.n_nodes} nodes constructed)')
         if current_depth < max_depth:
-            for uX_group, uX_node in [(uL_group, uL_node), 
-                                      (uD_group, uD_node), 
-                                      (uU_group, uU_node)]: 
-                self.__build_node__(users=uX_group, node=uX_node, current_depth=current_depth + 1, max_depth=max_depth)
+            child_inputs = [(self, uX_group, uX_node, current_depth + 1, max_depth) 
+                            for uX_group, uX_node 
+                            in [(uL_group, uL_node), 
+                                (uD_group, uD_node), 
+                                (uU_group, uU_node)]]
+            
+            # Construct child nodes in parallel
+            Parallel(n_jobs=3, backend='threading')(delayed(unwrap_self)(o) for o in child_inputs)
         
         return node
 
@@ -129,19 +127,34 @@ class FunctionalMatrixFactorization():
 
     
     def __update_user_embeddings__(self): 
-        for user in len(self.U): 
+        for user in range(len(self.U)): 
             self.U[user] = self.interview.conduct(user)
 
+    def __update_item_embeddings_v2__(self): 
+        for i in range(len(self.I)): 
+            user_indeces = self._D.get_users_from_item(i)
+            R = self._D.M[user_indeces]
+            R_map = self._D.answer_map[user_indeces]
+            Ta = self.U[user_indeces]
+            coeff_matrix = (Ta.T @ Ta + (tt.eye(self.k) * self.user_regularisation)).inverse()
+            coeff_vector = (R.T @ Ta).sum(dim=0) 
+            self.I[i] = coeff_matrix @ coeff_vector
 
     def __update_item_embeddings__(self): 
         coefficients = tt.zeros((self.k, self.k))
         coeff_vector = tt.zeros((1, self.k))
-        for user, Ta in enumerate(self.U): 
-            coefficients += Ta @ Ta.T + (tt.eye((self.k, self.k)) * self.item_regularisation)
-            for item in self._D.get_rated_items(user): 
-                coeff_vector += Ta * self._D.M[user][item] 
+        n_items = len(self.I)
+        for item in range(n_items):
+            for user in self._D.get_users_from_item(item): 
+                Ta = self.U[user]
+                coefficients += Ta @ Ta.T + (tt.eye(self.k) * self.item_regularisation)
 
-        return coefficients.inverse() @ coeff_vector
+            for user, Ta in enumerate(self.U): 
+                coefficients += Ta @ Ta.T + (tt.eye(self.k) * self.item_regularisation)
+                for item in self._D.get_rated_items(user): 
+                    coeff_vector += Ta * self._D.M[user][item] 
+
+        self.I[item] = coefficients.inverse() @ coeff_vector.T
 
 
     def evaluate(self, i): 
@@ -152,18 +165,18 @@ class FunctionalMatrixFactorization():
         self.__build__(len(self._D.items), len(self._D.users))
 
         has_converged = False 
-        self.interview = None
+        self.interview = Tree(profile=None, backend=self)
         n = 1
         while not has_converged: 
             # 1. Fit a decision tree 
             self.n_nodes = int((3 ** (self.D + 1) - 1) / 2)
             self.c_n_nodes = 0
             print(f'Building tree with {self.n_nodes} nodes...')
-            self.interview = self.__build_node__(users=range(len(self.U)), node=Tree(profile=None, backend=self), current_depth=0, max_depth=self.D)
+            self.interview = self.__build_node__(users=range(len(self.U)), node=self.interview, current_depth=1, max_depth=self.D)
             print(f'Updating user embeddings...')
             self.__update_user_embeddings__()
             # 2. Fit item embeddings
             print(f'Updating item embeddings...')
-            self.__update_item_embeddings__()
+            self.__update_item_embeddings_v2__()
             self.evaluate(n)
             n += 1

@@ -83,4 +83,7 @@ class DataUtil():
             rated_items += u_rated_items.tolist()
 
         return set(rated_items)
+
+    def get_users_from_item(self, item): 
+        return [u_idx for u_idx in self.users if not self.get_answer(u_idx, item) == AnswerType.UNKNOWN]
         
