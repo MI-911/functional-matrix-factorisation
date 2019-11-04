@@ -58,7 +58,7 @@ class DataUtil():
         self._uidx_map = uidx_map
         self._midx_map = midx_map
 
-    def __get_answer__(self, u, i): 
+    def get_answer(self, u, i): 
         r = self.M[u][i]
         if not r: 
             return AnswerType.UNKNOWN
@@ -69,11 +69,11 @@ class DataUtil():
         return AnswerType.LIKE if r > ANSWER_THRESHOLD else AnswerType.DISLIKE
 
     def get_user_group(self, users=None, item=None, answer=None): 
-        return [u_idx for u_idx in users if self.__get_answer__(u_idx, item) == answer]
+        return [u_idx for u_idx in users if self.get_answer(u_idx, item) == answer]
 
 
     def get_rated_items(self, user): 
-        return [i_idx for i_idx in self.items if not self.__get_answer__(user, i_idx) == AnswerType.UNKNOWN]
+        return [i_idx for i_idx in self.items if not self.get_answer(user, i_idx) == AnswerType.UNKNOWN]
     
     def get_items_in_user_group(self, users, answer=None): 
         rated_items = []
@@ -83,4 +83,7 @@ class DataUtil():
             rated_items += u_rated_items.tolist()
 
         return set(rated_items)
-         
+
+    def get_users_from_item(self, item): 
+        return [u_idx for u_idx in self.users if not self.get_answer(u_idx, item) == AnswerType.UNKNOWN]
+        

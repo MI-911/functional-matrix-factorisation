@@ -6,6 +6,6 @@ from fmf import FunctionalMatrixFactorization
 
 
 if __name__ == "__main__": 
-    FMF = FunctionalMatrixFactorization(interview_length=5)
+    FMF = FunctionalMatrixFactorization(interview_length=3)
     FMF.load_data(from_file=join('data', 'ratings.csv'))
     FMF.fit()
