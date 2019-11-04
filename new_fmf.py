@@ -1,36 +1,38 @@
-import torch as tt 
+import torch as tt
 import pandas as pd
 from os.path import join
 import math
+import time
+from datetime import timedelta
 
 
-def load_ratings(from_file=None): 
-    def unpack_row(row): 
+def load_ratings(from_file=None):
+    def unpack_row(row):
         row = row[-1]
         return list(map(int, [row['userId'], row['movieId'], row['rating'], row['timestamp']]))
 
-    with open(from_file) as fp: 
+    with open(from_file) as fp:
         df = pd.read_csv(fp)
-        return [unpack_row(row) for row in df.iterrows()] 
+        return [unpack_row(row) for row in df.iterrows()]
 
 
-def get_rating_matrix(from_file=None): 
+def get_rating_matrix(from_file=None):
     ratings = load_ratings(from_file=from_file)
     uid_map, uidx_map, u_count = {}, {}, 0
     mid_map, midx_map, m_count = {}, {}, 0
 
     for u, m, r, t in ratings:
-        if u not in uid_map: 
+        if u not in uid_map:
             uid_map[u] = u_count
             uidx_map[u_count] = u
             u_count += 1
-        if m not in mid_map: 
+        if m not in mid_map:
             mid_map[m] = m_count
             midx_map[m_count] = m
             m_count += 1
 
     R = tt.zeros((u_count, m_count))
-    for u, m, r, t in ratings: 
+    for u, m, r, t in ratings:
         u = uid_map[u]
         m = mid_map[m]
         R[u][m] = r
@@ -112,7 +114,9 @@ class Node:
         best_movie = None
         best_profiles = None
 
-        for movie in movies:
+        for i, movie in enumerate(movies):
+            start_time = time.time()
+
             RL, RD, RU = split_users(users=self.users, movie=movie, R=self.FMF.R)
             (uL, uL_loss), (uD, uD_loss), (uU, uU_loss) = (self.profile(user_group=Rx) for Rx in [RL, RD, RU])
             loss = uL_loss + uD_loss + uU_loss
@@ -121,16 +125,23 @@ class Node:
                 best_movie = movie
                 best_profiles = (RL, uL), (RD, uD), (RU, uU)
 
+            end_time = time.time()
+            elapsed_time = end_time - start_time
+            time_remaining = (elapsed_time * (len(movies) - i))
+            print(f'Splitting... {(i / len(movies)) * 100 : 2.2f}% (ETA in {timedelta(seconds=time_remaining)})')
+
         self.movie = best_movie
         return best_profiles
 
-    def profile(self, user_group=None):
+    def profile_old(self, user_group=None):
+        # NOTE: Deprecated, use profile instead. This is just here for
+        # reflection in the paper/report
         rated_movies = get_rated_movies(R=self.FMF.R, user_group=user_group)
 
         coeff_matrix = tt.zeros((self.FMF.k, self.FMF.k))
         coeff_vector = tt.zeros((1, self.FMF.k))
 
-        for u, movies in zip(user_group, rated_movies):
+        for i, (u, movies) in enumerate(zip(user_group, rated_movies)):
             for m in movies:
                 v = self.FMF.M[m].reshape((1, self.FMF.k))  # [5] --> [1, 5] so we can transpose to [5, 1]
 
@@ -143,14 +154,56 @@ class Node:
         loss = self.loss(profile=profile, user_group=user_group, rated_movies=rated_movies)
         return profile, loss
 
-    def loss(self, profile=None, user_group=None, rated_movies=None):
-        prediction_loss = 0
+    def profile(self, user_group):
+        def extract_embeddings(user_group):
+            # We can save some time by extracting a matrix of
+            # (duplicated) movie embeddings in the same order
+            # as their user ratings occur in the ratings array.
+            # By multiplying the ratings array onto that matrix,
+            # we are doing the same as in the for-loop approach
+            # except much faster. For the coefficient matrix, we
+            # can simply calculate the M.T @ M for the embedding
+            # matrix M, which is much faster as well.
 
-        for u, movies in zip(user_group, rated_movies):
-            for m in movies:
-                prediction_loss += (self.FMF.R[u][m] - (profile @ self.FMF.M[m])) ** 2
+            embeddings = []
+            ratings = []
+            for u in user_group:
+                for m in self.FMF.R[u].nonzero():
+                    ratings.append(self.FMF.R[u][m].item())
+                    embeddings.append(self.FMF.M[m].tolist())
 
-        return prediction_loss
+            embeddings = tt.Tensor(embeddings)
+            embeddings = embeddings.reshape(embeddings.shape[0], embeddings.shape[-1])
+
+            ratings = tt.Tensor(ratings).reshape(len(ratings), 1)
+            return embeddings, ratings
+
+        def loss(profile, movie_embeddings, ratings):
+            # Do some Torch magic to calculate the dot product
+            # between the profile vector and all movie vectors
+            n_ratings = len(ratings)
+
+            profiles = tt.ones((n_ratings, self.FMF.k)) * profile
+            ratings = ratings.reshape((n_ratings, 1, 1))
+            predictions = (
+                tt.bmm(profiles.reshape((n_ratings, 1, self.FMF.k)),
+                       movie_embeddings.reshape((n_ratings, self.FMF.k, 1)))
+                )
+
+            err = (ratings - predictions) ** 2
+            return err.sum()
+
+        M, R = extract_embeddings(user_group)
+
+        if not len(M):
+            return None, math.inf  # Don't split on an item the we can't construct a profile for
+
+        coeff_matrix = (M.T @ M).inverse()
+        coeff_vector = (M * R).sum(dim=0)
+
+        profile = coeff_matrix @ coeff_vector
+        loss = loss(profile, M, R)
+        return profile, loss
 
 
 class FMF:
@@ -163,8 +216,8 @@ class FMF:
         self.n_users = len(R)
         self.n_movies = len(R[0])
 
-        self.U = tt.zeros((self.n_users, self.k))
-        self.M = tt.zeros((self.n_movies, self.k))
+        self.U = tt.rand((self.n_users, self.k))
+        self.M = tt.rand((self.n_movies, self.k))
 
         self.regularisation = regularisation
 
@@ -192,7 +245,8 @@ class FMF:
         return root
 
 
-if __name__ == '__main__': 
+if __name__ == '__main__':
     R, uid_map, mid_map, answer_map = get_rating_matrix(from_file=join('data', 'ratings.csv'))
     FMF = FMF(R=R, k=5, max_depth=3, regularisation=0.0015)
+
     tree = FMF.fit()
