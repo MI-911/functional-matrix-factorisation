@@ -4,7 +4,8 @@ from os.path import join
 import math
 import time
 from datetime import timedelta
-
+from random import shuffle, sample
+import sys
 
 def load_ratings(from_file=None):
     def unpack_row(row):
@@ -16,11 +17,15 @@ def load_ratings(from_file=None):
         return [unpack_row(row) for row in df.iterrows()]
 
 
-def get_rating_matrix(from_file=None):
+def get_rating_matrix(from_file=None, split_ratio=0.75):
     ratings = load_ratings(from_file=from_file)
+    ratings = sample(ratings, int(len(ratings) * 0.25))  # Comment out - this is just to test with a smaller data set
     uid_map, uidx_map, u_count = {}, {}, 0
     mid_map, midx_map, m_count = {}, {}, 0
 
+    ratings_map = {}
+
+    shuffle(ratings)
     for u, m, r, t in ratings:
         if u not in uid_map:
             uid_map[u] = u_count
@@ -31,15 +36,32 @@ def get_rating_matrix(from_file=None):
             midx_map[m_count] = m
             m_count += 1
 
-    R = tt.zeros((u_count, m_count))
-    for u, m, r, t in ratings:
-        u = uid_map[u]
-        m = mid_map[m]
-        R[u][m] = r
+        if u not in ratings_map:
+            ratings_map[u] = []
+        ratings_map[u].append((m, r))
 
-    answer_map = tt.where(R > 0, tt.ones_like(R), tt.zeros_like(R))
+    # Take 75% of users as training set, 25% as test
+    u_train = list(ratings_map.keys())[int(u_count * split_ratio):]
+    u_test = list(ratings_map.keys())[:int(u_count * split_ratio)]
+    R_train = tt.zeros((u_count, m_count))
+    R_answer = tt.zeros((u_count, m_count))
+    R_eval = tt.zeros((u_count, m_count))
+    for u in u_train:
+        for m, r in ratings_map[u]:
+            R_train[uid_map[u]][mid_map[m]] = r
 
-    return R, uid_map, mid_map, answer_map
+    # Take 75% of test users ratings as answers, 25% as evaluation
+    for u in u_test:
+        ratings = ratings_map[u]
+        for m, r in ratings[int(len(ratings) * split_ratio):]:
+            R_answer[uid_map[u]][mid_map[m]] = r
+
+    for u in u_test:
+        ratings = ratings_map[u]
+        for m, r in ratings[:int(len(ratings) * split_ratio)]:
+            R_eval[uid_map[u]][mid_map[m]] = r
+
+    return R_train, R_answer, R_eval, len(ratings)
 
 
 def get_rated_movies(R=None, user_group=None):
@@ -118,19 +140,32 @@ class Node:
             start_time = time.time()
 
             RL, RD, RU = split_users(users=self.users, movie=movie, R=self.FMF.R)
+            if not RL and RD and RU:
+                continue  # We cannot have empty groups
+
             (uL, uL_loss), (uD, uD_loss), (uU, uU_loss) = (self.profile(user_group=Rx) for Rx in [RL, RD, RU])
             loss = uL_loss + uD_loss + uU_loss
             if loss < best_loss:
+                print(f'Found better split item at loss {loss}')
                 best_loss = loss
                 best_movie = movie
                 best_profiles = (RL, uL), (RD, uD), (RU, uU)
 
-            end_time = time.time()
-            elapsed_time = end_time - start_time
-            time_remaining = (elapsed_time * (len(movies) - i))
-            print(f'Splitting... {(i / len(movies)) * 100 : 2.2f}% (ETA in {timedelta(seconds=time_remaining)})')
+            if i % 50 == 0:
+                end_time = time.time()
+                elapsed_time = end_time - start_time
+                time_remaining = (elapsed_time * (len(movies) - i))
+                print(f'Splitting... {(i / len(movies)) * 100 : 2.2f}% (ETA is {timedelta(seconds=time_remaining)})', end='\r')
+
+        if not best_profiles:
+            return None
 
         self.movie = best_movie
+        (RL, uL), (RD, uD), (RU, uU) = best_profiles
+        print(f'Splitting on {best_movie} with group sizes and profiles:')
+        print(f' RL {len(RL)} ({uL})')
+        print(f' RD {len(RD)} ({uD})')
+        print(f' RU {len(RU)} ({uU})')
         return best_profiles
 
     def profile_old(self, user_group=None):
@@ -196,7 +231,8 @@ class Node:
         M, R = extract_embeddings(user_group)
 
         if not len(M):
-            return None, math.inf  # Don't split on an item the we can't construct a profile for
+            # Use the same profile as this node
+            loss = loss(self.optimal_profile, M, R)
 
         coeff_matrix = (M.T @ M).inverse()
         coeff_vector = (M * R).sum(dim=0)
@@ -208,13 +244,16 @@ class Node:
 
 class FMF:
 
-    def __init__(self, R=None, k=None, max_depth=None, regularisation=None):
+    def __init__(self, R=None, R_answer=None, R_eval=None, k=None, max_depth=None, regularisation=None, n_ratings=None):
         self.R = R
+        self.R_answer = R_answer
+        self.R_eval = R_eval
         self.k = k
         self.max_depth = max_depth
 
         self.n_users = len(R)
         self.n_movies = len(R[0])
+        self.n_ratings = n_ratings
 
         self.U = tt.rand((self.n_users, self.k))
         self.M = tt.rand((self.n_movies, self.k))
@@ -226,14 +265,22 @@ class FMF:
         if depth >= self.max_depth:
             return node
 
-        (RL, uL), (RD, uD), (RU, uU) = node.split(movies=range(self.n_movies))
+        if not users:
+            return node
+
+        split = node.split(movies=range(self.n_movies))
+        if not split:
+            return node  # This happens if we had to items to split on
+
+        (RL, uL), (RD, uD), (RU, uU) = split
+
         node.like = self.build_node(users=RL, profile=uL, depth=depth + 1)
         node.dislike = self.build_node(users=RD, profile=uD, depth=depth + 1)
         node.unknown = self.build_node(users=RU, profile=uU, depth=depth + 1)
 
         return node
 
-    def fit(self):
+    def fit_tree(self):
         root = Node(users=range(self.n_users), FMF=self)
         (RL, uL), (RD, uD), (RU, uU) = root.split(movies=range(self.n_movies))
 
@@ -244,9 +291,52 @@ class FMF:
 
         return root
 
+    def update_movies(self):
+        coeff_matrix = tt.zeros((self.k, self.k))
+        coeff_vector = tt.zeros((1, self.k))
+
+        for m in range(self.n_movies):
+            users = self.R[:, m].nonzero()  # Get user indices that aren't 0 for this movie
+            users = users.reshape((users.shape[0]))
+            for u in users:
+                p = self.U[u].reshape((1, self.k))
+                coeff_matrix += p.T @ p + tt.eye(self.k, self.k) * self.regularisation
+                coeff_vector += self.R[u][m] * p
+
+            # Update this item embedding if there were any ratings for it
+            if coeff_matrix.sum() > 0:
+                self.M[m] = coeff_matrix.inverse() @ coeff_vector.reshape(self.k)
+                print(f'Updating movie embeddings {(m / self.n_movies) * 100 : 2.2f}%', end='\r')
+
+    def update_users(self, tree=None):
+        for u in range(self.n_users):
+            print(f'Updating user embeddings {(u / self.n_users) * 100 : 2.2f}%', end='\r')
+            self.U[u] = tree.interview(self.R[u])
+
+    def evaluate(self):
+        sse = 0
+        for u in range(self.n_users):
+            for m in range(self.n_movies):
+                if not self.R[u][m] == 0:
+                    sse += ((self.R[u][m] - self.U[u] @ self.M[m]) ** 2) / self.n_ratings
+
+        print(f'RMSE is {math.sqrt(sse)}. Total SSE is {sse}')
+
+    def fit(self):
+        iterations = 1
+        while True:
+            print(f'Iteration {iterations}...')
+            tree = self.fit_tree()
+            self.update_users(tree=tree)
+            self.update_movies()
+            self.evaluate()
+
+            iterations += 1
+
 
 if __name__ == '__main__':
-    R, uid_map, mid_map, answer_map = get_rating_matrix(from_file=join('data', 'ratings.csv'))
-    FMF = FMF(R=R, k=5, max_depth=3, regularisation=0.0015)
+    R_train, R_answer, R_eval, n_ratings = get_rating_matrix(from_file=join('data', 'ratings.csv'), split_ratio=0.75)
+    FMF = FMF(R=R_train, R_answer=R_answer, R_eval=R_eval, k=5, max_depth=3, regularisation=0.0015, n_ratings=n_ratings)
 
-    tree = FMF.fit()
+    FMF.fit()
+

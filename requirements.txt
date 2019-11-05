@@ -1,9 +1,4 @@
 pathos
 torch
-<<<<<<< HEAD
-pandas
-=======
 pandas
 joblib
-
->>>>>>> ac3bbbd775a52e823eba0348e9bed4c6d18a8088

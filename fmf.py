@@ -125,7 +125,6 @@ class FunctionalMatrixFactorization():
         loss = (P - R) ** 2
         return u, user_indeces, loss.sum()
 
-    
     def __update_user_embeddings__(self): 
         for user in range(len(self.U)): 
             self.U[user] = self.interview.conduct(user)
